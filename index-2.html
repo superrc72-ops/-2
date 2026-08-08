@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>우린 열동이다2</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#2456A6" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js" crossorigin="anonymous"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js" crossorigin="anonymous"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  function showErr(prefix, msg) {
+    var div = document.createElement("div");
+    div.style.cssText = "position:fixed;top:0;left:0;right:0;background:#C0392B;color:#fff;padding:14px;font-size:13px;z-index:999999;white-space:pre-wrap;word-break:break-word;font-family:monospace;";
+    div.textContent = prefix + ": " + msg;
+    document.body.appendChild(div);
+  }
+  window.addEventListener("error", function (e) {
+    var extra = (e.error && e.error.stack) ? "\n" + e.error.stack : "";
+    showErr("JS 오류", (e.message || "") + " (" + (e.filename || "") + ":" + (e.lineno || "") + ")" + extra);
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    var msg = r && r.message ? r.message : JSON.stringify(r);
+    showErr("Promise 오류", msg);
+  });
+</script>
+<script>
+  // ---------- Firebase 설정 ----------
+  const firebaseConfig = {
+    apiKey: "AIzaSyCiwyxV0CZSmyfgX0-WQ_-DvRj6NRIV9HI",
+    authDomain: "we-10dong-95024.firebaseapp.com",
+    projectId: "we-10dong-95024",
+    storageBucket: "we-10dong-95024.firebasestorage.app",
+    messagingSenderId: "784115308102",
+    appId: "1:784115308102:web:3fcebcae44aca9c5835c47"
+  };
+  firebase.initializeApp(firebaseConfig);
+  window.__auth = firebase.auth();
+  window.__db = firebase.firestore();
+  window.__teamDoc = window.__db.collection("teams").doc("sixth");
+</script>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+// ---------- 설정값 ----------
+const ANCHOR_YEAR = 2026;
+const ANCHOR_MONTH = 6;
+const ANCHOR_START_IDX = 2;
+
+const TEAM_COLORS = {
+  1: { bg: "#FDE7D8", text: "#9A4B12", border: "#F0B685" },
+  2: { bg: "#DCEFE1", text: "#1F6B3B", border: "#9BD3AE" },
+  3: { bg: "#DCE7FA", text: "#1D4C9C", border: "#A9C2ED" },
+  4: { bg: "#EDE2F7", text: "#5B2E8C", border: "#CBACE3" },
+};
+
+const MINE_COLOR = "#0E8F82"; // 지금까지 안 쓴 청록색 - 내 이름 강조용
+const MINE_BG = "#DFF3F1";
+const mineNameStyle = { color: MINE_COLOR, fontWeight: 800, background: MINE_BG, borderRadius: 3, padding: "0 3px" };
+
+const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
+
+const DEFAULT_LEAVE_TEAMS = { 1: ["", "", "", "", ""], 2: ["", "", "", "", ""], 3: ["", "", "", ""], 4: ["", "", "", ""] };
+const DEFAULT_VOL_TEAMS = { 1: ["", "", "", ""], 2: ["", "", "", "", ""], 3: ["", "", "", ""], 4: ["", "", "", ""] };
+const DEFAULT_AUTO_VOL = { anchorDate: "2026-08-03", intervalDays: 4, nightSeq: [3, 2, 4, 1], daySeq: [4, 1, 3, 2] };
+const DEFAULT_MY_SHIFT = { anchorDate: "2026-08-01", pattern: ["주간", "야간", "휴", "비"] };
+
+const DEFAULT_SHARED = {
+  ownerTokens: [],
+  ownerRecoveryCode: null,
+  members: {},
+  pendingRequests: {},
+  leaveTeams: DEFAULT_LEAVE_TEAMS,
+  volTeams: DEFAULT_VOL_TEAMS,
+  autoVol: DEFAULT_AUTO_VOL,
+  myShift: DEFAULT_MY_SHIFT,
+  myTeam: 4,
+  calendar: {},
+  memos: {}, // "YYYY-M" -> 이번 달 메모
+};
+
+function monthsSinceAnchor(y, m) { return (y - ANCHOR_YEAR) * 12 + (m - ANCHOR_MONTH); }
+function turnOrder(y, m) {
+  const base = [1, 2, 3, 4];
+  const raw = (ANCHOR_START_IDX + monthsSinceAnchor(y, m)) % 4;
+  const idx = ((raw % 4) + 4) % 4;
+  return [0, 1, 2, 3].map((i) => base[(idx + i) % 4]);
+}
+function rotatedMembers(members, y, m) {
+  const size = members.length;
+  if (size === 0) return [];
+  const raw = monthsSinceAnchor(y, m) % size;
+  const shift = ((raw % size) + size) % size;
+  return members.slice(shift).concat(members.slice(0, shift));
+}
+function daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
+function firstWeekday(y, m) { return new Date(y, m - 1, 1).getDay(); }
+function dateKey(y, m, d) { return `${y}-${m}-${d}`; }
+function floorMod(a, b) { return ((a % b) + b) % b; }
+
+function computeAutoVol(y, m, d, config) {
+  if (!config || !config.anchorDate) return null;
+  const interval = Number(config.intervalDays) || 1;
+  const nightSeq = (config.nightSeq || []).filter((v) => v);
+  const daySeq = (config.daySeq || []).filter((v) => v);
+  if (nightSeq.length === 0 && daySeq.length === 0) return null;
+  const anchor = new Date(config.anchorDate + "T00:00:00");
+  const target = new Date(y, m - 1, d);
+  const diff = Math.round((target - anchor) / 86400000);
+  const offset = floorMod(diff, interval);
+  const idxBase = Math.floor(diff / interval);
+  if (offset === 0 && nightSeq.length > 0) return { team: nightSeq[floorMod(idxBase, nightSeq.length)], type: "야간자원" };
+  if (offset === 1 && daySeq.length > 0) return { team: daySeq[floorMod(idxBase, daySeq.length)], type: "주간자원" };
+  return null;
+}
+
+function computeMyStatus(y, m, d, config) {
+  if (!config || !config.anchorDate) return null;
+  const pattern = (config.pattern || []).filter(Boolean);
+  if (pattern.length === 0) return null;
+  const anchor = new Date(config.anchorDate + "T00:00:00");
+  const target = new Date(y, m - 1, d);
+  const diff = Math.round((target - anchor) / 86400000);
+  return pattern[floorMod(diff, pattern.length)];
+}
+
+function generateRecoveryCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function formatRelativeTime(ts) {
+  if (!ts) return "";
+  const diff = Date.now() - ts;
+  if (diff < 0) return "방금 전";
+  if (diff < 60000) return "방금 전";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}분 전`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}시간 전`;
+  return `${Math.floor(diff / 86400000)}일 전`;
+}
+
+// ---------- 개인 저장 (이 브라우저에만 저장됨) ----------
+const NAME_KEY = "urichari-my-name";
+const SOUND_KEY = "urichari-sound-on";
+function loadPersonalName() { try { return localStorage.getItem(NAME_KEY) || ""; } catch (e) { return ""; } }
+function savePersonalName(name) { try { localStorage.setItem(NAME_KEY, name); } catch (e) {} }
+function loadSoundSetting() { try { const v = localStorage.getItem(SOUND_KEY); return v === null ? true : v === "1"; } catch (e) { return true; } }
+function saveSoundSetting(on) { try { localStorage.setItem(SOUND_KEY, on ? "1" : "0"); } catch (e) {} }
+
+// 날짜별 메모는 팀과 공유되지 않는, 이 기기(브라우저)에서만 보이는 개인 메모
+const DATE_MEMO_KEY = "urichari-date-memos";
+function loadDateMemos() { try { const v = localStorage.getItem(DATE_MEMO_KEY); return v ? JSON.parse(v) : {}; } catch (e) { return {}; } }
+function saveDateMemos(obj) { try { localStorage.setItem(DATE_MEMO_KEY, JSON.stringify(obj)); } catch (e) {} }
+
+function playNotifySound() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.setValueAtTime(1180, ctx.currentTime + 0.12);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.4);
+    osc.onended = () => ctx.close();
+  } catch (e) { console.error("알림음 재생 실패", e); }
+}
+
+// ---------- Firebase 인증 + 공용 데이터 ----------
+function ensureAuth() {
+  return new Promise((resolve) => {
+    const unsub = window.__auth.onAuthStateChanged((user) => {
+      if (user) { unsub(); resolve(user.uid); }
+      else { window.__auth.signInAnonymously().catch((e) => console.error("인증 실패", e)); }
+    });
+  });
+}
+async function loadSharedOnce() {
+  const snap = await window.__teamDoc.get();
+  return snap.exists ? snap.data() : null;
+}
+async function saveShared(data) {
+  try { await window.__teamDoc.set(data); } catch (e) { console.error("저장 실패", e); }
+}
+function subscribeShared(callback) {
+  return window.__teamDoc.onSnapshot((snap) => { if (snap.exists) callback(snap.data()); });
+}
+
+function App() {
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [tab, setTab] = useState("calendar");
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [memoAnchor, setMemoAnchor] = useState(null); // { key, top, left }
+
+  const [myToken, setMyToken] = useState(null);
+  const [myName, setMyName] = useState("");
+  const [shared, setShared] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [saveState, setSaveState] = useState("idle");
+  const [soundOn, setSoundOn] = useState(true);
+  const [dateMemos, setDateMemos] = useState({});
+  const [justBecameOwnerCode, setJustBecameOwnerCode] = useState(null);
+  const remoteUpdateRef = useRef(false);
+  const soundOnRef = useRef(true);
+  const firstSnapRef = useRef(true);
+  const lastSeenUpdateRef = useRef(null);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => saveDateMemos(dateMemos), 400);
+    return () => clearTimeout(t);
+  }, [dateMemos, loaded]);
+
+  useEffect(() => {
+    soundOnRef.current = soundOn;
+    saveSoundSetting(soundOn);
+  }, [soundOn]);
+
+  useEffect(() => {
+    let unsubSnapshot = null;
+    (async () => {
+      const uid = await ensureAuth();
+      setMyToken(uid);
+      setMyName(loadPersonalName());
+      setSoundOn(loadSoundSetting());
+      setDateMemos(loadDateMemos());
+      const sh = await loadSharedOnce();
+      setShared(sh ? { ...DEFAULT_SHARED, ...sh } : DEFAULT_SHARED);
+      setLoaded(true);
+      unsubSnapshot = subscribeShared((data) => {
+        remoteUpdateRef.current = true;
+        setShared({ ...DEFAULT_SHARED, ...data });
+
+        // 알림음: 첫 로딩은 제외하고, 다른 사람이 변경했을 때만 재생
+        const isFirst = firstSnapRef.current;
+        firstSnapRef.current = false;
+        const changed = data.updatedAt && data.updatedAt !== lastSeenUpdateRef.current;
+        lastSeenUpdateRef.current = data.updatedAt || lastSeenUpdateRef.current;
+        const isOthers = data.updatedByToken && data.updatedByToken !== uid;
+        const iAmOwner = data.ownerTokens && data.ownerTokens.includes(uid);
+        if (!isFirst && changed && isOthers && iAmOwner && soundOnRef.current) {
+          playNotifySound();
+        }
+      });
+    })();
+    return () => { if (unsubSnapshot) unsubSnapshot(); };
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => savePersonalName(myName), 400);
+    return () => clearTimeout(t);
+  }, [myName, loaded]);
+
+  useEffect(() => {
+    if (!loaded || !shared) return;
+    if (remoteUpdateRef.current) { remoteUpdateRef.current = false; return; }
+    const t = setTimeout(() => stampAndSave(shared), 400);
+    return () => clearTimeout(t);
+  }, [shared, loaded]);
+
+  const stampAndSave = async (data) => {
+    const stamped = { ...data, updatedAt: Date.now(), updatedBy: myName || "이름 미입력", updatedByToken: myToken };
+    await saveShared(stamped);
+  };
+
+  // 30초마다 화면을 다시 그려서 "n분 전" 표시가 갱신되게 함
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  // 접속 상태(하트비트): 승인된 사용자만 25초마다 자신의 접속 시각을 기록
+  useEffect(() => {
+    if (!loaded || !shared || !myToken) return;
+    const ownerNow = shared.ownerTokens.includes(myToken);
+    const memberNow = shared.members[myToken];
+    const approvedNow = ownerNow || (memberNow && memberNow.approved);
+    if (!approvedNow) return;
+    const beat = () => {
+      window.__db.collection("presence").doc(myToken).set({ name: myName || "이름 미입력", lastSeen: Date.now() }, { merge: true }).catch(() => {});
+    };
+    beat();
+    const id = setInterval(beat, 25000);
+    return () => clearInterval(id);
+  }, [loaded, myToken, myName, shared && shared.ownerTokens.join(","), shared && Object.keys(shared.members || {}).join(",")]);
+
+  // 방장만: 전체 접속 현황 구독
+  const [presenceMap, setPresenceMap] = useState({});
+  useEffect(() => {
+    if (!loaded || !shared || !myToken) return;
+    const ownerNow = shared.ownerTokens.includes(myToken);
+    if (!ownerNow) return;
+    const unsub = window.__db.collection("presence").onSnapshot((snap) => {
+      const map = {};
+      snap.forEach((doc) => { map[doc.id] = doc.data(); });
+      setPresenceMap(map);
+    });
+    return () => unsub();
+  }, [loaded, myToken, shared && shared.ownerTokens.join(",")]);
+
+  const refreshShared = async () => {
+    const sh = await loadSharedOnce();
+    if (sh) setShared({ ...DEFAULT_SHARED, ...sh });
+  };
+
+  const mutateShared = async (updater) => {
+    const fresh = { ...DEFAULT_SHARED, ...((await loadSharedOnce()) || shared || {}) };
+    const next = updater(fresh);
+    const stamped = { ...next, updatedAt: Date.now(), updatedBy: myName || "이름 미입력", updatedByToken: myToken };
+    await saveShared(stamped);
+    setShared(next);
+  };
+
+  if (!loaded || !shared) {
+    return <div style={{ padding: 40, textAlign: "center", color: "#9A968A" }}>불러오는 중...</div>;
+  }
+
+  const isOwner = shared.ownerTokens.includes(myToken);
+  const memberInfo = shared.members[myToken];
+  const isApproved = isOwner || (memberInfo && memberInfo.approved);
+  const pending = shared.pendingRequests[myToken];
+
+  if (justBecameOwnerCode) {
+    return (
+      <GateShell>
+        <OwnerCodeScreen code={justBecameOwnerCode} onContinue={() => setJustBecameOwnerCode(null)} />
+      </GateShell>
+    );
+  }
+
+  if (!isApproved) {
+    if (shared.ownerTokens.length === 0) {
+      return (
+        <GateShell>
+          <BecomeOwnerScreen
+            onSubmit={async (name) => {
+              const code = generateRecoveryCode();
+              setMyName(name);
+              savePersonalName(name);
+              try {
+                await mutateShared((base) => ({
+                  ...base,
+                  ownerTokens: [myToken],
+                  ownerRecoveryCode: code,
+                  members: { ...base.members, [myToken]: { name, approved: true } },
+                }));
+              } catch (err) {
+                if (window.showErr) window.showErr("방장 등록 실패", (err && err.message) || String(err));
+                throw err;
+              }
+              setJustBecameOwnerCode(code);
+            }}
+          />
+        </GateShell>
+      );
+    }
+    if (pending) {
+      return (
+        <GateShell>
+          <WaitingScreen name={pending.name} onRefresh={refreshShared} onRecover={(code) => tryRecover(code, myToken, mutateShared)} />
+        </GateShell>
+      );
+    }
+    return (
+      <GateShell>
+        <JoinRequestScreen
+          onSubmit={async (name) => {
+            await mutateShared((base) => ({
+              ...base,
+              pendingRequests: { ...base.pendingRequests, [myToken]: { name, requestedAt: Date.now() } },
+            }));
+          }}
+          onRecover={(code) => tryRecover(code, myToken, mutateShared)}
+        />
+      </GateShell>
+    );
+  }
+
+  const updateSharedFn = (fn) => setShared((prev) => fn(prev));
+
+  const updateLeaveName = (team, idx, value) => updateSharedFn((p) => { const lt = { ...p.leaveTeams, [team]: [...p.leaveTeams[team]] }; lt[team][idx] = value; return { ...p, leaveTeams: lt }; });
+  const updateVolName = (team, idx, value) => updateSharedFn((p) => { const vt = { ...p.volTeams, [team]: [...p.volTeams[team]] }; vt[team][idx] = value; return { ...p, volTeams: vt }; });
+  const addLeaveSlot = (team) => updateSharedFn((p) => (p.leaveTeams[team].length >= 5 ? p : { ...p, leaveTeams: { ...p.leaveTeams, [team]: [...p.leaveTeams[team], ""] } }));
+  const removeLeaveSlot = (team, idx) => updateSharedFn((p) => { if (p.leaveTeams[team].length <= 1) return p; const arr = [...p.leaveTeams[team]]; arr.splice(idx, 1); return { ...p, leaveTeams: { ...p.leaveTeams, [team]: arr } }; });
+  const addVolSlot = (team) => updateSharedFn((p) => (p.volTeams[team].length >= 5 ? p : { ...p, volTeams: { ...p.volTeams, [team]: [...p.volTeams[team], ""] } }));
+  const removeVolSlot = (team, idx) => updateSharedFn((p) => { if (p.volTeams[team].length <= 1) return p; const arr = [...p.volTeams[team]]; arr.splice(idx, 1); return { ...p, volTeams: { ...p.volTeams, [team]: arr } }; });
+
+  const setMyTeam = (val) => updateSharedFn((p) => ({ ...p, myTeam: val }));
+
+  const updateAutoVolField = (field, value) => updateSharedFn((p) => ({ ...p, autoVol: { ...p.autoVol, [field]: value } }));
+  const updateSeqValue = (seqKey, idx, value) => updateSharedFn((p) => { const arr = [...p.autoVol[seqKey]]; arr[idx] = Number(value); return { ...p, autoVol: { ...p.autoVol, [seqKey]: arr } }; });
+  const addSeqSlot = (seqKey) => updateSharedFn((p) => (p.autoVol[seqKey].length >= 8 ? p : { ...p, autoVol: { ...p.autoVol, [seqKey]: [...p.autoVol[seqKey], 1] } }));
+  const removeSeqSlot = (seqKey, idx) => updateSharedFn((p) => { if (p.autoVol[seqKey].length <= 1) return p; const arr = [...p.autoVol[seqKey]]; arr.splice(idx, 1); return { ...p, autoVol: { ...p.autoVol, [seqKey]: arr } }; });
+
+  const updateMyShiftAnchor = (value) => updateSharedFn((p) => ({ ...p, myShift: { ...p.myShift, anchorDate: value } }));
+  const updateMyShiftPatternValue = (idx, value) => updateSharedFn((p) => { const arr = [...p.myShift.pattern]; arr[idx] = value; return { ...p, myShift: { ...p.myShift, pattern: arr } }; });
+  const addMyShiftSlot = () => updateSharedFn((p) => (p.myShift.pattern.length >= 12 ? p : { ...p, myShift: { ...p.myShift, pattern: [...p.myShift.pattern, "주간"] } }));
+  const removeMyShiftSlot = (idx) => updateSharedFn((p) => { if (p.myShift.pattern.length <= 1) return p; const arr = [...p.myShift.pattern]; arr.splice(idx, 1); return { ...p, myShift: { ...p.myShift, pattern: arr } }; });
+
+  const updateMemo = (key, value) => updateSharedFn((p) => ({ ...p, memos: { ...p.memos, [key]: value } }));
+  const updateDateMemo = (key, value) => setDateMemos((prev) => ({ ...prev, [key]: value }));
+
+  const approveRequest = (token) => mutateShared((base) => {
+    const req = base.pendingRequests[token];
+    if (!req) return base;
+    const nextPending = { ...base.pendingRequests };
+    delete nextPending[token];
+    return { ...base, pendingRequests: nextPending, members: { ...base.members, [token]: { name: req.name, approved: true } } };
+  });
+  const rejectRequest = (token) => mutateShared((base) => {
+    const nextPending = { ...base.pendingRequests };
+    delete nextPending[token];
+    return { ...base, pendingRequests: nextPending };
+  });
+  const kickMember = (token) => mutateShared((base) => {
+    const nextMembers = { ...base.members };
+    delete nextMembers[token];
+    return { ...base, members: nextMembers, ownerTokens: base.ownerTokens.filter((t) => t !== token) };
+  });
+  const transferOwner = (token) => mutateShared((base) => (
+    base.ownerTokens.includes(token) ? base : { ...base, ownerTokens: [...base.ownerTokens, token] }
+  ));
+  const regenerateRecoveryCode = () => mutateShared((base) => ({ ...base, ownerRecoveryCode: generateRecoveryCode() }));
+
+  const handleManualSave = async () => {
+    setSaveState("saving");
+    await stampAndSave(shared);
+    setSaveState("saved");
+    setTimeout(() => setSaveState("idle"), 1500);
+  };
+
+  const order = turnOrder(year, month);
+  const monthKey = `${year}-${month}`;
+
+  const goMonth = (delta) => {
+    let m = month + delta, y = year;
+    if (m > 12) { m = 1; y++; } else if (m < 1) { m = 12; y--; }
+    setMonth(m); setYear(y); setSelectedDate(null);
+  };
+
+  const cellData = (key, y, m, d) => {
+    const auto = computeAutoVol(y, m, d, shared.autoVol);
+    const autoNames = auto ? (shared.volTeams[auto.team] || []).filter(Boolean) : [];
+    const base = {
+      leaveNames: [],
+      volTeam: auto ? auto.team : null,
+      volType: auto ? auto.type : "야간자원",
+      volNames: auto ? autoNames : [],
+      myStatus: computeMyStatus(y, m, d, shared.myShift),
+    };
+    const stored = shared.calendar[key];
+    return stored ? { ...base, ...stored } : base;
+  };
+  const setCellData = (key, y, m, d, patch) => updateSharedFn((p) => ({ ...p, calendar: { ...p.calendar, [key]: { ...cellData(key, y, m, d), ...patch, editedBy: myName || "이름 미입력", editedAt: Date.now() } } }));
+  const clearCell = (key) => updateSharedFn((p) => { const next = { ...p.calendar }; delete next[key]; return { ...p, calendar: next }; });
+
+  const nDays = daysInMonth(year, month);
+  const startDay = firstWeekday(year, month);
+  const cells = [];
+  for (let i = 0; i < startDay; i++) cells.push(null);
+  for (let d = 1; d <= nDays; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+
+  return (
+    <div style={{ fontFamily: "'Pretendard', 'Malgun Gothic', sans-serif", background: "#F6F5F2", minHeight: "100vh", color: "#2A2A28" }}>
+      <style>{`
+        .name-grid { display: flex; flex-wrap: wrap; gap: 1px 6px; line-height: 1.35; min-width: 0; }
+        .name-grid .name-item { white-space: nowrap; flex-shrink: 0; }
+        .memo-bubble { position: absolute; z-index: 50; width: 220px; background: #fff; border: 1px solid #E4E1D8; border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); padding: 10px; }
+        .memo-bubble::before { content: ""; position: absolute; top: -7px; left: 16px; width: 12px; height: 12px; background: #fff; border-left: 1px solid #E4E1D8; border-top: 1px solid #E4E1D8; transform: rotate(45deg); }
+      `}</style>      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 12px 60px" }}>
+        <Header year={year} month={month} goMonth={goMonth} tab={tab} setTab={setTab} onRefresh={refreshShared} updatedAt={shared.updatedAt} updatedBy={shared.updatedBy} isOwner={isOwner} soundOn={soundOn} setSoundOn={setSoundOn} />
+
+        {tab === "roster" ? (
+          <RosterEditor
+            isOwner={isOwner}
+            leaveTeams={shared.leaveTeams} volTeams={shared.volTeams}
+            updateLeaveName={updateLeaveName} updateVolName={updateVolName}
+            addLeaveSlot={addLeaveSlot} removeLeaveSlot={removeLeaveSlot} addVolSlot={addVolSlot} removeVolSlot={removeVolSlot}
+            myTeam={shared.myTeam} setMyTeam={setMyTeam}
+            myName={myName} setMyName={setMyName}
+            autoVol={shared.autoVol} updateAutoVolField={updateAutoVolField} updateSeqValue={updateSeqValue} addSeqSlot={addSeqSlot} removeSeqSlot={removeSeqSlot}
+            myShift={shared.myShift} updateMyShiftAnchor={updateMyShiftAnchor} updateMyShiftPatternValue={updateMyShiftPatternValue} addMyShiftSlot={addMyShiftSlot} removeMyShiftSlot={removeMyShiftSlot}
+            onManualSave={handleManualSave} saveState={saveState}
+            pendingRequests={shared.pendingRequests} members={shared.members} ownerTokens={shared.ownerTokens} myToken={myToken}
+            onApprove={approveRequest} onReject={rejectRequest} onKick={kickMember} onTransfer={transferOwner}
+            recoveryCode={shared.ownerRecoveryCode} onRegenerateCode={regenerateRecoveryCode}
+            presenceMap={presenceMap}
+          />
+        ) : (
+          <>
+            <MemoBox monthLabel={`${year}년 ${month}월`} value={shared.memos[monthKey] || ""} onChange={(v) => updateMemo(monthKey, v)} />
+            <TurnOrderPanel year={year} month={month} order={order} leaveTeams={shared.leaveTeams} myName={myName} />
+
+            <div style={{ background: "#fff", borderRadius: 14, border: "1px solid #E4E1D8", overflow: "hidden", marginTop: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", borderBottom: "1px solid #E4E1D8" }}>
+                {WEEKDAYS.map((w, i) => (
+                  <div key={w} style={{ textAlign: "center", padding: "8px 0", fontWeight: 700, fontSize: 12.5, color: i === 0 ? "#C0392B" : i === 6 ? "#2456A6" : "#6B675E", background: "#FAF9F5" }}>{w}</div>
+                ))}
+              </div>
+              {weeks.map((week, wi) => (
+                <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}>
+                  {week.map((d, di) => {
+                    if (!d) return <div key={di} style={{ minHeight: 88, minWidth: 0, background: "#FBFAF7", borderRight: "1px solid #EEEBE2", borderBottom: "1px solid #EEEBE2" }} />;
+                    const key = dateKey(year, month, d);
+                    const cd = cellData(key, year, month, d);
+                    const isSelected = selectedDate === key;
+                    const isToday = year === now.getFullYear() && month === now.getMonth() + 1 && d === now.getDate();
+                    const hasMemo = !!(dateMemos[key] && dateMemos[key].trim());
+                    return (
+                      <DayCell
+                        key={di}
+                        day={d}
+                        weekdayIdx={di}
+                        cd={cd}
+                        isSelected={isSelected}
+                        isToday={isToday}
+                        myName={myName}
+                        hasMemo={hasMemo}
+                        onClick={(e) => {
+                          const willOpen = !isSelected;
+                          setSelectedDate(willOpen ? key : null);
+                          if (willOpen) {
+                            const r = e.currentTarget.getBoundingClientRect();
+                            const bubbleW = 220;
+                            let left = r.left + window.scrollX;
+                            const viewportRightLimit = window.scrollX + window.innerWidth - 8;
+                            if (left + bubbleW > viewportRightLimit) left = viewportRightLimit - bubbleW;
+                            if (left < window.scrollX + 8) left = window.scrollX + 8;
+                            setMemoAnchor({ key, top: r.bottom + window.scrollY + 4, left });
+                          } else {
+                            setMemoAnchor(null);
+                          }
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+
+            {memoAnchor && memoAnchor.key === selectedDate && (
+              <MemoBubble
+                anchor={memoAnchor}
+                value={dateMemos[memoAnchor.key] || ""}
+                onChange={(v) => updateDateMemo(memoAnchor.key, v)}
+                onClose={() => setMemoAnchor(null)}
+              />
+            )}
+
+            {selectedDate && (
+              <DayEditor
+                key={selectedDate}
+                dateKey={selectedDate} year={year} month={month}
+                cd={cellData(selectedDate, year, month, Number(selectedDate.split("-")[2]))}
+                leaveTeams={shared.leaveTeams} volTeams={shared.volTeams} isOwner={isOwner}
+                onChange={(patch) => setCellData(selectedDate, year, month, Number(selectedDate.split("-")[2]), patch)}
+                onClear={() => clearCell(selectedDate)}
+                onClose={() => setSelectedDate(null)}
+              />
+            )}
+
+            <VolGroupsPanel volTeams={shared.volTeams} myName={myName} />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+async function tryRecover(code, myToken, mutateShared) {
+  let ok = false;
+  await mutateShared((base) => {
+    if (base.ownerRecoveryCode && code && base.ownerRecoveryCode === code.trim()) {
+      ok = true;
+      return { ...base, ownerTokens: base.ownerTokens.includes(myToken) ? base.ownerTokens : [...base.ownerTokens, myToken] };
+    }
+    return base;
+  });
+  return ok;
+}
+
+function GateShell({ children }) {
+  return (
+    <div style={{ fontFamily: "'Pretendard', 'Malgun Gothic', sans-serif", background: "#F6F5F2", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ maxWidth: 380, width: "100%", background: "#fff", border: "1px solid #E4E1D8", borderRadius: 16, padding: 28, textAlign: "center" }}>
+        <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A7B4F", fontWeight: 700, marginBottom: 4 }}>우린 열동이다2</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function BecomeOwnerScreen({ onSubmit }) {
+  const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  return (
+    <div>
+      <div style={{ fontSize: 16, fontWeight: 800, margin: "8px 0 6px" }}>아직 방장이 없어요</div>
+      <div style={{ fontSize: 12.5, color: "#9A968A", marginBottom: 16, lineHeight: 1.5 }}>이 팀의 첫 사용자시네요. 방장이 되면 팀원 설정을 관리하고 가입 신청을 승인할 수 있어요.</div>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="내 이름" style={{ ...nameInputStyle, width: "100%", marginBottom: 12 }} />
+      <button
+        disabled={!name.trim() || submitting}
+        onClick={async () => { setSubmitting(true); await onSubmit(name.trim()); }}
+        style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "1px solid #2456A6", background: name.trim() ? "#2456A6" : "#B9CBEC", color: "#fff", fontWeight: 700, fontSize: 14, cursor: name.trim() ? "pointer" : "default" }}
+      >
+        {submitting ? "처리 중..." : "방장으로 시작하기"}
+      </button>
+    </div>
+  );
+}
+
+function OwnerCodeScreen({ code, onContinue }) {
+  return (
+    <div>
+      <div style={{ fontSize: 16, fontWeight: 800, margin: "8px 0 6px" }}>방장이 되었어요!</div>
+      <div style={{ fontSize: 12.5, color: "#57544B", marginBottom: 14, lineHeight: 1.6 }}>
+        아래 <b>방장 복구 코드</b>를 꼭 저장해두세요. 나중에 브라우저를 바꾸거나 방장 권한이 풀렸을 때 이 코드로 다시 방장이 될 수 있어요.
+      </div>
+      <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: 4, padding: "14px 0", background: "#FFF9EC", border: "1px solid #F0DFA8", borderRadius: 10, marginBottom: 14, color: "#8A6D1A" }}>{code}</div>
+      <button onClick={onContinue} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "1px solid #2456A6", background: "#2456A6", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>확인, 시작하기</button>
+    </div>
+  );
+}
+
+function JoinRequestScreen({ onSubmit, onRecover }) {
+  const [name, setName] = useState("");
+  const [sent, setSent] = useState(false);
+  const [showRecover, setShowRecover] = useState(false);
+  const [code, setCode] = useState("");
+  const [recoverMsg, setRecoverMsg] = useState("");
+
+  if (sent) return <WaitingScreen name={name} onRefresh={() => {}} onRecover={onRecover} hideRefreshHint />;
+
+  if (showRecover) {
+    return (
+      <div>
+        <div style={{ fontSize: 16, fontWeight: 800, margin: "8px 0 6px" }}>방장 복구</div>
+        <div style={{ fontSize: 12.5, color: "#9A968A", marginBottom: 16, lineHeight: 1.5 }}>방장이 되셨을 때 받은 6자리 복구 코드를 입력하세요.</div>
+        <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="복구 코드 6자리" style={{ ...nameInputStyle, width: "100%", marginBottom: 12 }} />
+        {recoverMsg && <div style={{ fontSize: 12, color: "#B0483C", marginBottom: 10 }}>{recoverMsg}</div>}
+        <button onClick={async () => { const ok = await onRecover(code); if (ok) window.location.reload(); else setRecoverMsg("코드가 일치하지 않아요."); }} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "1px solid #2456A6", background: "#2456A6", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer", marginBottom: 8 }}>복구하기</button>
+        <button onClick={() => setShowRecover(false)} style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: "1px solid #DAD6CA", background: "#fff", color: "#57544B", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>취소</button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 16, fontWeight: 800, margin: "8px 0 6px" }}>가입 신청</div>
+      <div style={{ fontSize: 12.5, color: "#9A968A", marginBottom: 16, lineHeight: 1.5 }}>이름을 입력하고 신청하면 방장이 승인한 뒤 사용할 수 있어요.</div>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="내 이름" style={{ ...nameInputStyle, width: "100%", marginBottom: 12 }} />
+      <button
+        disabled={!name.trim()}
+        onClick={() => { onSubmit(name.trim()); setSent(true); }}
+        style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "1px solid #2456A6", background: name.trim() ? "#2456A6" : "#B9CBEC", color: "#fff", fontWeight: 700, fontSize: 14, cursor: name.trim() ? "pointer" : "default", marginBottom: 10 }}
+      >
+        가입 신청하기
+      </button>
+      <button onClick={() => setShowRecover(true)} style={{ width: "100%", padding: "8px 0", borderRadius: 10, border: "none", background: "transparent", color: "#9A968A", fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>이전에 방장이었나요? 복구 코드로 인증</button>
+    </div>
+  );
+}
+
+function WaitingScreen({ name, onRefresh, onRecover, hideRefreshHint }) {
+  const [showRecover, setShowRecover] = useState(false);
+  const [code, setCode] = useState("");
+  const [recoverMsg, setRecoverMsg] = useState("");
+
+  if (showRecover) {
+    return (
+      <div>
+        <div style={{ fontSize: 16, fontWeight: 800, margin: "8px 0 6px" }}>방장 복구</div>
+        <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="복구 코드 6자리" style={{ ...nameInputStyle, width: "100%", marginBottom: 12 }} />
+        {recoverMsg && <div style={{ fontSize: 12, color: "#B0483C", marginBottom: 10 }}>{recoverMsg}</div>}
+        <button onClick={async () => { const ok = await onRecover(code); if (ok) window.location.reload(); else setRecoverMsg("코드가 일치하지 않아요."); }} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "1px solid #2456A6", background: "#2456A6", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer", marginBottom: 8 }}>복구하기</button>
+        <button onClick={() => setShowRecover(false)} style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: "1px solid #DAD6CA", background: "#fff", color: "#57544B", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>취소</button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 16, fontWeight: 800, margin: "8px 0 6px" }}>승인 대기 중</div>
+      <div style={{ fontSize: 13, color: "#57544B", marginBottom: 16, lineHeight: 1.6 }}><b>{name}</b>님, 방장의 승인을 기다리고 있어요.</div>
+      <button onClick={onRefresh} style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: "1px solid #DAD6CA", background: "#fff", color: "#57544B", fontWeight: 700, fontSize: 13, cursor: "pointer", marginBottom: 10 }}>새로고침</button>
+      <button onClick={() => setShowRecover(true)} style={{ width: "100%", padding: "8px 0", borderRadius: 10, border: "none", background: "transparent", color: "#9A968A", fontSize: 11.5, cursor: "pointer", textDecoration: "underline" }}>이전에 방장이었나요? 복구 코드로 인증</button>
+    </div>
+  );
+}
+
+function Header({ year, month, goMonth, tab, setTab, onRefresh, updatedAt, updatedBy, isOwner, soundOn, setSoundOn }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+      <div>
+        <div style={{ fontSize: 12, letterSpacing: 1, color: "#9A7B4F", fontWeight: 700 }}>우린 열동이다2</div>
+        <h1 style={{ fontSize: 21, fontWeight: 800, margin: "2px 0 0" }}>연가 및 자원 근무표</h1>
+        {updatedAt && (
+          <div style={{ fontSize: 10.5, color: "#B0AC9E", marginTop: 2 }}>
+            최신 업데이트 · {isOwner ? `${updatedBy || "누군가"} · ` : ""}{formatRelativeTime(updatedAt)}
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        {isOwner && <button onClick={() => setSoundOn(!soundOn)} title={soundOn ? "알림음 끄기" : "알림음 켜기"} style={navBtnStyle}>{soundOn ? "🔔" : "🔕"}</button>}
+        <button onClick={onRefresh} title="새로고침" style={navBtnStyle}>⟳</button>
+        <button onClick={() => setTab("calendar")} style={tabBtnStyle(tab === "calendar")}>근무표</button>
+        <button onClick={() => setTab("roster")} style={tabBtnStyle(tab === "roster")}>팀원 설정</button>
+      </div>
+      {tab === "calendar" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", justifyContent: "center", marginTop: 2 }}>
+          <button onClick={() => goMonth(-1)} style={navBtnStyle}>‹</button>
+          <div style={{ fontSize: 17, fontWeight: 700, minWidth: 110, textAlign: "center" }}>{year}년 {month}월</div>
+          <button onClick={() => goMonth(1)} style={navBtnStyle}>›</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const tabBtnStyle = (active) => ({ padding: "8px 16px", borderRadius: 999, border: active ? "1px solid #2456A6" : "1px solid #DAD6CA", background: active ? "#2456A6" : "#fff", color: active ? "#fff" : "#57544B", fontWeight: 600, fontSize: 13, cursor: "pointer" });
+const navBtnStyle = { width: 32, height: 32, borderRadius: 8, border: "1px solid #DAD6CA", background: "#fff", fontSize: 15, cursor: "pointer", lineHeight: "1" };
+
+function MemoBox({ monthLabel, value, onChange }) {
+  return (
+    <div style={{ marginTop: 14, background: "#FFFBEA", border: "1px solid #F0DFA8", borderRadius: 14, padding: "12px 16px" }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6, color: "#8A6D1A" }}>📌 {monthLabel} 메모 / 주요 행사</div>
+      <textarea value={value} onChange={(e) => onChange(e.target.value)} placeholder="이번 달 중요한 일정이나 공지사항을 적어두세요" rows={2} style={{ width: "100%", resize: "vertical", border: "1px solid #EFE1AE", borderRadius: 8, padding: "8px 10px", fontSize: 13, fontFamily: "inherit", background: "#fff", boxSizing: "border-box" }} />
+    </div>
+  );
+}
+
+function TurnOrderPanel({ year, month, order, leaveTeams, myName }) {
+  return (
+    <div style={{ marginTop: 14, background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: "12px 16px" }}>
+      <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 8, color: "#57544B" }}>■ {month}월 연가 순번 : {order.map((t) => `${t}조`).join(" - ")} 順</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))", gap: 8 }}>
+        {order.map((team, i) => {
+          const members = rotatedMembers(leaveTeams[team] || [], year, month).filter(Boolean);
+          const c = TEAM_COLORS[team];
+          return (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12.5, minWidth: 0 }}>
+              <span style={{ flexShrink: 0, padding: "2px 8px", borderRadius: 6, background: c.bg, color: c.text, fontWeight: 700, border: `1px solid ${c.border}` }}>{i + 1}순위·{team}조</span>
+              {members.length ? (
+                <div className="name-grid" style={{ color: "#57544B", flex: 1, minWidth: 0 }}>
+                  {members.map((name) => (
+                    <span key={name} className="name-item" style={myName && name === myName ? mineNameStyle : undefined}>{name}</span>
+                  ))}
+                </div>
+              ) : (
+                <span style={{ color: "#57544B" }}>(이름 미입력)</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DayCell({ day, weekdayIdx, cd, isSelected, isToday, myName, hasMemo, onClick }) {
+  const volColor = cd.volTeam ? TEAM_COLORS[cd.volTeam] : null;
+  const isMineName = (name) => myName && name === myName;
+
+  let statusBg = "#fff";
+  let numColor = weekdayIdx === 0 ? "#C0392B" : weekdayIdx === 6 ? "#2456A6" : "#2A2A28";
+  let badgeStyle = null;
+  if (cd.myStatus === "주간") {
+    statusBg = "#FDF5E4";
+    numColor = "#8A5A0A";
+    badgeStyle = { bg: "#D99A2B", text: "#fff" };
+  } else if (cd.myStatus === "야간") {
+    statusBg = "#E9ECF9";
+    numColor = "#2C3A8C";
+    badgeStyle = { bg: "#4A5FC7", text: "#fff" };
+  }
+
+  return (
+    <div onClick={onClick} style={{ minHeight: 88, minWidth: 0, overflowX: "hidden", padding: "5px 5px", borderRight: "1px solid #EEEBE2", borderBottom: "1px solid #EEEBE2", cursor: "pointer", background: isSelected ? "#FFF9EC" : statusBg, outline: isSelected ? "2px solid #E0A63A" : "none", outlineOffset: -2, position: "relative", boxSizing: "border-box" }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: isToday ? "#fff" : numColor, marginBottom: 3, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={isToday ? { background: "#E0562F", color: "#fff", borderRadius: "50%", width: 20, height: 20, display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1 } : undefined}>{day}</span>
+        {badgeStyle && (
+          <span style={{ fontSize: 9, fontWeight: 800, background: badgeStyle.bg, color: badgeStyle.text, borderRadius: 4, padding: "1px 5px" }}>
+            {cd.myStatus}
+          </span>
+        )}
+      </div>
+      {cd.leaveNames && cd.leaveNames.length > 0 && (
+        <div className="name-grid" style={{ fontSize: 10.5, color: "#1D4C9C", background: "#EAF1FC", borderRadius: 4, padding: "2px 4px", marginBottom: 2 }}>
+          {cd.leaveNames.map((name) => (
+            <span key={name} className="name-item" style={isMineName(name) ? mineNameStyle : undefined}>{name}</span>
+          ))}
+        </div>
+      )}
+      {volColor && cd.volNames && cd.volNames.length > 0 && (
+        <div style={{ marginTop: 2 }}>
+          <span style={{ fontSize: 10, fontWeight: 800, background: volColor.bg, color: volColor.text, borderRadius: 4, padding: "1px 5px", display: "inline-block", marginBottom: 2 }}>{cd.volType === "야간자원" ? "야자" : "주자"}</span>
+          <div className="name-grid" style={{ fontSize: 10.5, color: volColor.text }}>
+            {cd.volNames.map((name) => (
+              <span key={name} className="name-item" style={isMineName(name) ? mineNameStyle : undefined}>{name}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {hasMemo && (
+        <span style={{ position: "absolute", right: 4, bottom: 4, width: 7, height: 7, borderRadius: "50%", background: "#D9453C" }} title="메모 있음"></span>
+      )}
+    </div>
+  );
+}
+
+function toggleInArray(arr, val) { return arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]; }
+
+function MemoBubble({ anchor, value, onChange, onClose }) {
+  return (
+    <div className="memo-bubble" style={{ top: anchor.top, left: anchor.left }} onClick={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: "#8A6D1A" }}>📝 이 날짜 메모</div>
+        <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 14, lineHeight: 1, color: "#9A968A", padding: 2 }}>×</button>
+      </div>
+      <textarea
+        autoFocus
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="간단한 메모를 남겨보세요"
+        rows={3}
+        style={{ width: "100%", resize: "vertical", border: "1px solid #EEEBE2", borderRadius: 8, padding: "6px 8px", fontSize: 12.5, fontFamily: "inherit", boxSizing: "border-box" }}
+      />
+    </div>
+  );
+}
+
+function DayEditor({ dateKey, year, month, cd, leaveTeams, volTeams, isOwner, onChange, onClear, onClose }) {
+  const d = dateKey.split("-")[2];
+  const volMembers = cd.volTeam ? (volTeams[cd.volTeam] || []).filter(Boolean) : [];
+  const allLeaveNames = [1, 2, 3, 4].flatMap((t) => (leaveTeams[t] || []).filter(Boolean));
+  const [customLeave, setCustomLeave] = useState("");
+  const [customVol, setCustomVol] = useState("");
+
+  const isWorkDay = cd.myStatus === "주간" || cd.myStatus === "야간";
+  const isOffDay = cd.myStatus === "휴" || cd.myStatus === "비";
+
+  const addCustomLeave = () => {
+    const name = customLeave.trim();
+    if (!name || cd.leaveNames.includes(name)) return;
+    onChange({ leaveNames: [...cd.leaveNames, name] });
+    setCustomLeave("");
+  };
+  const removeLeaveName = (name) => onChange({ leaveNames: cd.leaveNames.filter((n) => n !== name) });
+  const toggleLeaveName = (name) => onChange({ leaveNames: toggleInArray(cd.leaveNames, name) });
+  const addCustomVol = () => {
+    const name = customVol.trim();
+    if (!name || cd.volNames.includes(name)) return;
+    onChange({ volNames: [...cd.volNames, name] });
+    setCustomVol("");
+  };
+  const removeVolName = (name) => onChange({ volNames: cd.volNames.filter((n) => n !== name) });
+
+  return (
+    <div style={{ marginTop: 14, background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15 }}>{month}월 {d}일 편집</div>
+          {cd.editedBy && <div style={{ fontSize: 10.5, color: "#B0AC9E", marginTop: 2 }}>마지막 수정 · {isOwner ? `${cd.editedBy} · ` : ""}{formatRelativeTime(cd.editedAt)}</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onClear} style={smallBtn("#fff", "#B0483C", "#E9C3BC")}>지우기</button>
+          <button onClick={onClose} style={smallBtn("#fff", "#57544B", "#DAD6CA")}>닫기</button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 18 }}>
+        {!isOffDay && (
+          <div>
+            {cd.leaveNames.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {cd.leaveNames.map((name) => (
+                  <span key={name} style={editableChip}>{name}<button onClick={() => removeLeaveName(name)} style={chipRemoveBtn}>×</button></span>
+                ))}
+              </div>
+            )}
+            {allLeaveNames.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {allLeaveNames.map((name) => (
+                  <button key={name} onClick={() => toggleLeaveName(name)} style={chipStyle(cd.leaveNames.includes(name), { bg: "#DCE7FA", text: "#1D4C9C", border: "#A9C2ED" })}>{name}</button>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 6 }}>
+              <input value={customLeave} onChange={(e) => setCustomLeave(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCustomLeave()} placeholder="명단에 없는 이름 입력" style={{ ...nameInputStyle, width: 130 }} />
+              <button onClick={addCustomLeave} style={smallBtn("#fff", "#2456A6", "#B9CBEC")}>추가</button>
+            </div>
+          </div>
+        )}
+
+        {!isWorkDay && (
+          <div>
+            <div style={sectionLabel("#8A5A0A")}>자원근무 (자동배정됨 · 필요시 수정)</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <select value={cd.volTeam || ""} onChange={(e) => onChange({ volTeam: e.target.value ? Number(e.target.value) : null, volNames: [] })} style={selectStyle}>
+                <option value="">자원조 선택</option>
+                {[1, 2, 3, 4].map((t) => <option key={t} value={t}>{t}조</option>)}
+              </select>
+              <select value={cd.volType} onChange={(e) => onChange({ volType: e.target.value })} style={selectStyle}>
+                <option value="야간자원">야간자원</option>
+                <option value="주간자원">주간자원</option>
+              </select>
+            </div>
+            {cd.volTeam && volMembers.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {volMembers.map((name) => (
+                  <label key={name} style={chipStyle(cd.volNames.includes(name), { bg: "#FCECC8", text: "#8A5A0A", border: "#EBC98A" })}>
+                    <input type="checkbox" checked={cd.volNames.includes(name)} onChange={() => onChange({ volNames: toggleInArray(cd.volNames, name) })} style={{ display: "none" }} />
+                    {name}
+                  </label>
+                ))}
+              </div>
+            )}
+            {cd.volNames.length > 0 && (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {cd.volNames.map((name) => (
+                  <span key={name} style={{ ...editableChip, background: "#FCECC8", borderColor: "#EBC98A", color: "#8A5A0A" }}>{name}<button onClick={() => removeVolName(name)} style={chipRemoveBtn}>×</button></span>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 10.5, color: "#9A968A", marginTop: 6 }}>※ 이 날짜만 바뀌며, 팀원 설정의 명단·규칙은 그대로 유지돼요.</div>
+            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+              <input value={customVol} onChange={(e) => setCustomVol(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCustomVol()} placeholder="명단에 없는 이름 입력" style={{ ...nameInputStyle, width: 130 }} />
+              <button onClick={addCustomVol} style={smallBtn("#fff", "#8A5A0A", "#EBC98A")}>추가</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const sectionLabel = (color) => ({ fontSize: 12, fontWeight: 800, color, marginBottom: 6, letterSpacing: 0.5 });
+const selectStyle = { padding: "6px 8px", borderRadius: 8, border: "1px solid #DAD6CA", fontSize: 12.5, background: "#fff" };
+const smallBtn = (bg, color, border) => ({ padding: "6px 12px", borderRadius: 8, border: `1px solid ${border}`, background: bg, color, fontSize: 12, fontWeight: 700, cursor: "pointer" });
+const chipStyle = (active, color) => ({ padding: "5px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, cursor: "pointer", border: `1px solid ${active ? color.border : "#DAD6CA"}`, background: active ? color.bg : "#fff", color: active ? color.text : "#8A867C" });
+const editableChip = { display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 6px 4px 10px", borderRadius: 999, fontSize: 12, fontWeight: 600, background: "#DCE7FA", border: "1px solid #A9C2ED", color: "#1D4C9C" };
+const chipRemoveBtn = { border: "none", background: "transparent", cursor: "pointer", fontSize: 13, lineHeight: 1, color: "inherit", opacity: 0.6, padding: "0 2px" };
+const nameInputStyle = { width: 76, padding: "6px 8px", borderRadius: 8, border: "1px solid #DAD6CA", fontSize: 12.5 };
+const slotRemoveBtn = { position: "absolute", top: -6, right: -6, width: 16, height: 16, borderRadius: "50%", border: "1px solid #DAD6CA", background: "#fff", color: "#B0483C", fontSize: 10, lineHeight: "14px", padding: 0, cursor: "pointer" };
+const addSlotBtn = { padding: "6px 10px", borderRadius: 8, border: "1px dashed #B7B2A3", background: "#fff", color: "#57544B", fontSize: 11.5, fontWeight: 600, cursor: "pointer" };
+
+function RosterEditor(props) {
+  const { isOwner, myName, setMyName } = props;
+
+  if (!isOwner) {
+    return (
+      <div style={{ marginTop: 14 }}>
+        <div style={{ background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16 }}>
+          <div style={sectionLabel("#57544B")}>내 이름 (달력에서 강조 표시)</div>
+          <input value={myName} onChange={(e) => setMyName(e.target.value)} placeholder="예: 홍길동" style={{ ...nameInputStyle, width: 160 }} />
+          <div style={{ fontSize: 11.5, color: "#9A968A", marginTop: 10 }}>그 외 팀원 명단·근무 규칙 등은 방장만 수정할 수 있어요.</div>
+        </div>
+      </div>
+    );
+  }
+
+  const {
+    leaveTeams, volTeams, updateLeaveName, updateVolName, addLeaveSlot, removeLeaveSlot, addVolSlot, removeVolSlot,
+    myTeam, setMyTeam,
+    autoVol, updateAutoVolField, updateSeqValue, addSeqSlot, removeSeqSlot,
+    myShift, updateMyShiftAnchor, updateMyShiftPatternValue, addMyShiftSlot, removeMyShiftSlot,
+    onManualSave, saveState,
+    pendingRequests, members, ownerTokens, myToken, onApprove, onReject, onKick, onTransfer,
+    recoveryCode, onRegenerateCode, presenceMap,
+  } = props;
+
+  return (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16, marginBottom: 16, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))", gap: 14 }}>
+        <div>
+          <div style={sectionLabel("#57544B")}>우리 팀</div>
+          <select value={myTeam} onChange={(e) => setMyTeam(Number(e.target.value))} style={selectStyle}>
+            {[1, 2, 3, 4].map((t) => <option key={t} value={t}>{t}팀</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={sectionLabel("#57544B")}>내 이름 (달력에서 강조 표시)</div>
+          <input value={myName} onChange={(e) => setMyName(e.target.value)} placeholder="예: 홍길동" style={{ ...nameInputStyle, width: 140 }} />
+        </div>
+      </div>
+
+      <MemberManagePanel pendingRequests={pendingRequests} members={members} ownerTokens={ownerTokens} myToken={myToken} onApprove={onApprove} onReject={onReject} onKick={onKick} onTransfer={onTransfer} recoveryCode={recoveryCode} onRegenerateCode={onRegenerateCode} presenceMap={presenceMap} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px,1fr))", gap: 16, marginTop: 16 }}>
+        <div style={{ background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16 }}>
+          <div style={{ fontWeight: 800, fontSize: 14.5, marginBottom: 4 }}>연가 그룹 (1~4조, 조당 최대 5명)</div>
+          <div style={{ fontSize: 11.5, color: "#9A968A", marginBottom: 12 }}>매달 순번대로 돌아가며 연가를 쓰는 팀원 명단입니다.</div>
+          {[1, 2, 3, 4].map((team) => (
+            <div key={team} style={{ marginBottom: 12 }}>
+              <div style={{ ...sectionLabel(TEAM_COLORS[team].text), display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ background: TEAM_COLORS[team].bg, padding: "1px 8px", borderRadius: 6 }}>{team}조</span>
+                <span style={{ fontWeight: 400, color: "#9A968A", fontSize: 11 }}>{leaveTeams[team].length}/5명</span>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                {leaveTeams[team].map((name, idx) => (
+                  <div key={idx} style={{ position: "relative", display: "inline-flex" }}>
+                    <input value={name} placeholder={`${idx + 1}번`} onChange={(e) => updateLeaveName(team, idx, e.target.value)} style={nameInputStyle} />
+                    {leaveTeams[team].length > 1 && <button onClick={() => removeLeaveSlot(team, idx)} style={slotRemoveBtn}>×</button>}
+                  </div>
+                ))}
+                {leaveTeams[team].length < 5 && <button onClick={() => addLeaveSlot(team)} style={addSlotBtn}>+ 인원 추가</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16 }}>
+          <div style={{ fontWeight: 800, fontSize: 14.5, marginBottom: 4 }}>자원근무 그룹 (1~4조, 조당 최대 5명)</div>
+          <div style={{ fontSize: 11.5, color: "#9A968A", marginBottom: 12 }}>여기에 이름을 입력하면 아래 자동배정 규칙에 따라 달력에 자동으로 채워져요.</div>
+          {[1, 2, 3, 4].map((team) => (
+            <div key={team} style={{ marginBottom: 12 }}>
+              <div style={{ ...sectionLabel("#8A5A0A"), display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ background: "#FCECC8", padding: "1px 8px", borderRadius: 6 }}>{team}조</span>
+                <span style={{ fontWeight: 400, color: "#9A968A", fontSize: 11 }}>{volTeams[team].length}/5명</span>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                {volTeams[team].map((name, idx) => (
+                  <div key={idx} style={{ position: "relative", display: "inline-flex" }}>
+                    <input value={name} placeholder={`${idx + 1}번`} onChange={(e) => updateVolName(team, idx, e.target.value)} style={nameInputStyle} />
+                    {volTeams[team].length > 1 && <button onClick={() => removeVolSlot(team, idx)} style={slotRemoveBtn}>×</button>}
+                  </div>
+                ))}
+                {volTeams[team].length < 5 && <button onClick={() => addVolSlot(team)} style={addSlotBtn}>+ 인원 추가</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <MyShiftConfigPanel myShift={myShift} updateMyShiftAnchor={updateMyShiftAnchor} updateMyShiftPatternValue={updateMyShiftPatternValue} addMyShiftSlot={addMyShiftSlot} removeMyShiftSlot={removeMyShiftSlot} />
+      <AutoVolConfigPanel autoVol={autoVol} updateAutoVolField={updateAutoVolField} updateSeqValue={updateSeqValue} addSeqSlot={addSeqSlot} removeSeqSlot={removeSeqSlot} />
+
+      <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 16 }}>
+        {saveState === "saved" && <span style={{ fontSize: 12, color: "#1F6B3B", fontWeight: 700 }}>저장됨 ✓</span>}
+        <button onClick={onManualSave} disabled={saveState === "saving"} style={{ padding: "10px 22px", borderRadius: 10, border: "1px solid #2456A6", background: "#2456A6", color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+          {saveState === "saving" ? "저장 중..." : "저장"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MemberManagePanel({ pendingRequests, members, ownerTokens, myToken, onApprove, onReject, onKick, onTransfer, recoveryCode, onRegenerateCode, presenceMap }) {
+  const pendingList = Object.entries(pendingRequests || {});
+  const memberList = Object.entries(members || {});
+  const [transferTarget, setTransferTarget] = useState("");
+  const nonOwnerMembers = memberList.filter(([token]) => !ownerTokens.includes(token));
+  const onlineCount = memberList.filter(([token]) => {
+    const p = (presenceMap || {})[token];
+    return p && Date.now() - p.lastSeen < 60000;
+  }).length;
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16, marginTop: 16 }}>
+      <div style={{ fontWeight: 800, fontSize: 14.5, marginBottom: 4 }}>팀원 관리 (방장 전용)</div>
+
+      <div style={{ marginBottom: 14, padding: "10px 12px", background: "#FFF9EC", border: "1px solid #F0DFA8", borderRadius: 10 }}>
+        <div style={sectionLabel("#8A6D1A")}>방장 복구 코드</div>
+        <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: 3, color: "#8A6D1A", marginBottom: 6 }}>{recoveryCode || "-"}</div>
+        <div style={{ fontSize: 11, color: "#9A968A", marginBottom: 8 }}>브라우저를 바꾸거나 방장 권한이 풀렸을 때 이 코드로 다시 방장이 될 수 있어요. 유출됐다면 재발급하세요.</div>
+        <button onClick={onRegenerateCode} style={smallBtn("#fff", "#8A6D1A", "#F0DFA8")}>코드 재발급</button>
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={sectionLabel("#8A5A0A")}>가입 승인 대기 ({pendingList.length}명)</div>
+        {pendingList.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#B0AC9E" }}>대기 중인 신청이 없어요.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {pendingList.map(([token, req]) => (
+              <div key={token} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "#FAF9F5", borderRadius: 8, border: "1px solid #EEEBE2" }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{req.name}</span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={() => onApprove(token)} style={smallBtn("#1F6B3B", "#fff", "#1F6B3B")}>승인</button>
+                  <button onClick={() => onReject(token)} style={smallBtn("#fff", "#B0483C", "#E9C3BC")}>거절</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: 14 }}>
+        <div style={sectionLabel("#2456A6")}>팀원 목록 ({memberList.length}명 · 지금 접속 {onlineCount}명)</div>
+        {memberList.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#B0AC9E" }}>아직 승인된 팀원이 없어요.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {memberList.map(([token, m]) => {
+              const p = (presenceMap || {})[token];
+              const online = p && Date.now() - p.lastSeen < 60000;
+              return (
+                <div key={token} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "#FAF9F5", borderRadius: 8, border: "1px solid #EEEBE2" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: online ? "#2FA84F" : "#D8D4C8", flexShrink: 0 }} title={online ? "온라인" : "오프라인"}></span>
+                    {m.name} {ownerTokens.includes(token) && <span style={{ fontSize: 10.5, color: "#8A5A0A", fontWeight: 700 }}>· 방장</span>}
+                    {token === myToken && <span style={{ fontSize: 10.5, color: "#9A968A" }}> (나)</span>}
+                    <span style={{ fontSize: 10, color: "#B0AC9E", fontWeight: 400 }}>
+                      {online ? "접속중" : p ? `${formatRelativeTime(p.lastSeen)} 접속` : "접속 기록 없음"}
+                    </span>
+                  </span>
+                  {token !== myToken && !ownerTokens.includes(token) && (
+                    <button onClick={() => onKick(token)} style={smallBtn("#fff", "#B0483C", "#E9C3BC")}>강퇴</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div style={sectionLabel("#57544B")}>방장 권한 넘기기 (내 방장 권한은 유지돼요)</div>
+        {nonOwnerMembers.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#B0AC9E" }}>넘겨줄 수 있는 팀원이 없어요.</div>
+        ) : (
+          <div style={{ display: "flex", gap: 8 }}>
+            <select value={transferTarget} onChange={(e) => setTransferTarget(e.target.value)} style={selectStyle}>
+              <option value="">팀원 선택</option>
+              {nonOwnerMembers.map(([token, m]) => <option key={token} value={token}>{m.name}</option>)}
+            </select>
+            <button disabled={!transferTarget} onClick={() => { onTransfer(transferTarget); setTransferTarget(""); }} style={smallBtn(transferTarget ? "#2456A6" : "#B9CBEC", "#fff", "#2456A6")}>방장 권한 부여</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MyShiftConfigPanel({ myShift, updateMyShiftAnchor, updateMyShiftPatternValue, addMyShiftSlot, removeMyShiftSlot }) {
+  const options = ["주간", "야간", "휴", "비"];
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16, marginTop: 16 }}>
+      <div style={{ fontWeight: 800, fontSize: 14.5, marginBottom: 4 }}>우리 팀 근무 패턴 (주간/야간/휴/비)</div>
+      <div style={{ fontSize: 11.5, color: "#9A968A", marginBottom: 12, lineHeight: 1.5 }}>기준일부터 아래 순서가 반복됩니다. 나중에 교대 패턴이 바뀌면 이 순서 목록만 수정하면 그 시점 이후 날짜부터 자동 반영돼요.</div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={sectionLabel("#57544B")}>기준일</div>
+        <input type="date" value={myShift.anchorDate} onChange={(e) => updateMyShiftAnchor(e.target.value)} style={selectStyle} />
+      </div>
+      <div>
+        <div style={sectionLabel("#57544B")}>반복 순서</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+          {myShift.pattern.map((val, idx) => (
+            <div key={idx} style={{ position: "relative", display: "inline-flex" }}>
+              <select value={val} onChange={(e) => updateMyShiftPatternValue(idx, e.target.value)} style={selectStyle}>
+                {options.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+              {myShift.pattern.length > 1 && <button onClick={() => removeMyShiftSlot(idx)} style={slotRemoveBtn}>×</button>}
+            </div>
+          ))}
+          {myShift.pattern.length < 12 && <button onClick={addMyShiftSlot} style={addSlotBtn}>+ 순서 추가</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AutoVolConfigPanel({ autoVol, updateAutoVolField, updateSeqValue, addSeqSlot, removeSeqSlot }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: 16, marginTop: 16 }}>
+      <div style={{ fontWeight: 800, fontSize: 14.5, marginBottom: 4 }}>자원근무 자동배정 규칙</div>
+      <div style={{ fontSize: 11.5, color: "#9A968A", marginBottom: 12, lineHeight: 1.5 }}>기준일부터 N일마다 반복되는 패턴입니다. 기준일 = 야간자원 시작일, 그다음 날 = 주간자원. 나중에 패턴이 바뀌면 조 순서 목록만 수정하면 이후 날짜부터 자동 반영돼요.</div>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <div style={sectionLabel("#57544B")}>기준일 (야간자원 시작일)</div>
+          <input type="date" value={autoVol.anchorDate} onChange={(e) => updateAutoVolField("anchorDate", e.target.value)} style={selectStyle} />
+        </div>
+        <div>
+          <div style={sectionLabel("#57544B")}>반복 간격(일)</div>
+          <input type="number" min="1" value={autoVol.intervalDays} onChange={(e) => updateAutoVolField("intervalDays", e.target.value)} style={{ ...selectStyle, width: 70 }} />
+        </div>
+      </div>
+      <SeqEditor label="야간자원 담당 조 순서" color="#8A5A0A" seq={autoVol.nightSeq} seqKey="nightSeq" updateSeqValue={updateSeqValue} addSeqSlot={addSeqSlot} removeSeqSlot={removeSeqSlot} />
+      <SeqEditor label="주간자원 담당 조 순서 (기준일 다음날)" color="#8A5A0A" seq={autoVol.daySeq} seqKey="daySeq" updateSeqValue={updateSeqValue} addSeqSlot={addSeqSlot} removeSeqSlot={removeSeqSlot} />
+    </div>
+  );
+}
+
+function SeqEditor({ label, color, seq, seqKey, updateSeqValue, addSeqSlot, removeSeqSlot }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={sectionLabel(color)}>{label}</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+        {seq.map((val, idx) => (
+          <div key={idx} style={{ position: "relative", display: "inline-flex" }}>
+            <select value={val} onChange={(e) => updateSeqValue(seqKey, idx, e.target.value)} style={selectStyle}>
+              {[1, 2, 3, 4].map((t) => <option key={t} value={t}>{t}조</option>)}
+            </select>
+            {seq.length > 1 && <button onClick={() => removeSeqSlot(seqKey, idx)} style={slotRemoveBtn}>×</button>}
+          </div>
+        ))}
+        {seq.length < 8 && <button onClick={() => addSeqSlot(seqKey)} style={addSlotBtn}>+ 순서 추가</button>}
+      </div>
+    </div>
+  );
+}
+
+function VolGroupsPanel({ volTeams, myName }) {
+  return (
+    <div style={{ marginTop: 12, background: "#fff", border: "1px solid #E4E1D8", borderRadius: 14, padding: "12px 16px" }}>
+      <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 8, color: "#57544B" }}>■ 자원 그룹</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))", gap: 8, fontSize: 12.5 }}>
+        {[1, 2, 3, 4].map((team) => {
+          const members = volTeams[team].filter(Boolean);
+          return (
+            <div key={team} style={{ display: "flex", gap: 8, minWidth: 0 }}>
+              <span style={{ flexShrink: 0, padding: "2px 8px", borderRadius: 6, background: "#FCECC8", color: "#8A5A0A", fontWeight: 700 }}>{team}조</span>
+              {members.length ? (
+                <div className="name-grid" style={{ color: "#57544B", flex: 1, minWidth: 0 }}>
+                  {members.map((name) => (
+                    <span key={name} className="name-item" style={myName && name === myName ? mineNameStyle : undefined}>{name}</span>
+                  ))}
+                </div>
+              ) : (
+                <span style={{ color: "#57544B" }}>(이름 미입력)</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch((e) => console.error("SW 등록 실패", e));
+    });
+  }
+</script>
+</body>
+</html>
