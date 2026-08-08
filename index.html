@@ -160,11 +160,6 @@ function savePersonalName(name) { try { localStorage.setItem(NAME_KEY, name); } 
 function loadSoundSetting() { try { const v = localStorage.getItem(SOUND_KEY); return v === null ? true : v === "1"; } catch (e) { return true; } }
 function saveSoundSetting(on) { try { localStorage.setItem(SOUND_KEY, on ? "1" : "0"); } catch (e) {} }
 
-// 날짜별 메모는 팀과 공유되지 않는, 이 기기(브라우저)에서만 보이는 개인 메모
-const DATE_MEMO_KEY = "urichari-date-memos";
-function loadDateMemos() { try { const v = localStorage.getItem(DATE_MEMO_KEY); return v ? JSON.parse(v) : {}; } catch (e) { return {}; } }
-function saveDateMemos(obj) { try { localStorage.setItem(DATE_MEMO_KEY, JSON.stringify(obj)); } catch (e) {} }
-
 function playNotifySound() {
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -211,7 +206,6 @@ function App() {
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [tab, setTab] = useState("calendar");
   const [selectedDate, setSelectedDate] = useState(null);
-  const [memoAnchor, setMemoAnchor] = useState(null); // { key, top, left }
 
   const [myToken, setMyToken] = useState(null);
   const [myName, setMyName] = useState("");
@@ -219,18 +213,11 @@ function App() {
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState("idle");
   const [soundOn, setSoundOn] = useState(true);
-  const [dateMemos, setDateMemos] = useState({});
   const [justBecameOwnerCode, setJustBecameOwnerCode] = useState(null);
   const remoteUpdateRef = useRef(false);
   const soundOnRef = useRef(true);
   const firstSnapRef = useRef(true);
   const lastSeenUpdateRef = useRef(null);
-
-  useEffect(() => {
-    if (!loaded) return;
-    const t = setTimeout(() => saveDateMemos(dateMemos), 400);
-    return () => clearTimeout(t);
-  }, [dateMemos, loaded]);
 
   useEffect(() => {
     soundOnRef.current = soundOn;
@@ -244,7 +231,6 @@ function App() {
       setMyToken(uid);
       setMyName(loadPersonalName());
       setSoundOn(loadSoundSetting());
-      setDateMemos(loadDateMemos());
       const sh = await loadSharedOnce();
       setShared(sh ? { ...DEFAULT_SHARED, ...sh } : DEFAULT_SHARED);
       setLoaded(true);
@@ -421,7 +407,6 @@ function App() {
   const removeMyShiftSlot = (idx) => updateSharedFn((p) => { if (p.myShift.pattern.length <= 1) return p; const arr = [...p.myShift.pattern]; arr.splice(idx, 1); return { ...p, myShift: { ...p.myShift, pattern: arr } }; });
 
   const updateMemo = (key, value) => updateSharedFn((p) => ({ ...p, memos: { ...p.memos, [key]: value } }));
-  const updateDateMemo = (key, value) => setDateMemos((prev) => ({ ...prev, [key]: value }));
 
   const approveRequest = (token) => mutateShared((base) => {
     const req = base.pendingRequests[token];
@@ -491,8 +476,6 @@ function App() {
       <style>{`
         .name-grid { display: flex; flex-wrap: wrap; gap: 1px 6px; line-height: 1.35; min-width: 0; }
         .name-grid .name-item { white-space: nowrap; flex-shrink: 0; }
-        .memo-bubble { position: absolute; z-index: 50; width: 220px; background: #fff; border: 1px solid #E4E1D8; border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,0.12); padding: 10px; }
-        .memo-bubble::before { content: ""; position: absolute; top: -7px; left: 16px; width: 12px; height: 12px; background: #fff; border-left: 1px solid #E4E1D8; border-top: 1px solid #E4E1D8; transform: rotate(45deg); }
       `}</style>      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 12px 60px" }}>
         <Header year={year} month={month} goMonth={goMonth} tab={tab} setTab={setTab} onRefresh={refreshShared} updatedAt={shared.updatedAt} updatedBy={shared.updatedBy} isOwner={isOwner} soundOn={soundOn} setSoundOn={setSoundOn} />
 
@@ -531,7 +514,6 @@ function App() {
                     const cd = cellData(key, year, month, d);
                     const isSelected = selectedDate === key;
                     const isToday = year === now.getFullYear() && month === now.getMonth() + 1 && d === now.getDate();
-                    const hasMemo = !!(dateMemos[key] && dateMemos[key].trim());
                     return (
                       <DayCell
                         key={di}
@@ -541,37 +523,13 @@ function App() {
                         isSelected={isSelected}
                         isToday={isToday}
                         myName={myName}
-                        hasMemo={hasMemo}
-                        onClick={(e) => {
-                          const willOpen = !isSelected;
-                          setSelectedDate(willOpen ? key : null);
-                          if (willOpen) {
-                            const r = e.currentTarget.getBoundingClientRect();
-                            const bubbleW = 220;
-                            let left = r.left + window.scrollX;
-                            const viewportRightLimit = window.scrollX + window.innerWidth - 8;
-                            if (left + bubbleW > viewportRightLimit) left = viewportRightLimit - bubbleW;
-                            if (left < window.scrollX + 8) left = window.scrollX + 8;
-                            setMemoAnchor({ key, top: r.bottom + window.scrollY + 4, left });
-                          } else {
-                            setMemoAnchor(null);
-                          }
-                        }}
+                        onClick={() => setSelectedDate(isSelected ? null : key)}
                       />
                     );
                   })}
                 </div>
               ))}
             </div>
-
-            {memoAnchor && memoAnchor.key === selectedDate && (
-              <MemoBubble
-                anchor={memoAnchor}
-                value={dateMemos[memoAnchor.key] || ""}
-                onChange={(v) => updateDateMemo(memoAnchor.key, v)}
-                onClose={() => setMemoAnchor(null)}
-              />
-            )}
 
             {selectedDate && (
               <DayEditor
@@ -783,7 +741,7 @@ function TurnOrderPanel({ year, month, order, leaveTeams, myName }) {
   );
 }
 
-function DayCell({ day, weekdayIdx, cd, isSelected, isToday, myName, hasMemo, onClick }) {
+function DayCell({ day, weekdayIdx, cd, isSelected, isToday, myName, onClick }) {
   const volColor = cd.volTeam ? TEAM_COLORS[cd.volTeam] : null;
   const isMineName = (name) => myName && name === myName;
 
@@ -827,33 +785,11 @@ function DayCell({ day, weekdayIdx, cd, isSelected, isToday, myName, hasMemo, on
           </div>
         </div>
       )}
-      {hasMemo && (
-        <span style={{ position: "absolute", right: 4, bottom: 4, width: 7, height: 7, borderRadius: "50%", background: "#D9453C" }} title="메모 있음"></span>
-      )}
     </div>
   );
 }
 
 function toggleInArray(arr, val) { return arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]; }
-
-function MemoBubble({ anchor, value, onChange, onClose }) {
-  return (
-    <div className="memo-bubble" style={{ top: anchor.top, left: anchor.left }} onClick={(e) => e.stopPropagation()}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: "#8A6D1A" }}>📝 이 날짜 메모</div>
-        <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 14, lineHeight: 1, color: "#9A968A", padding: 2 }}>×</button>
-      </div>
-      <textarea
-        autoFocus
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="간단한 메모를 남겨보세요"
-        rows={3}
-        style={{ width: "100%", resize: "vertical", border: "1px solid #EEEBE2", borderRadius: 8, padding: "6px 8px", fontSize: 12.5, fontFamily: "inherit", boxSizing: "border-box" }}
-      />
-    </div>
-  );
-}
 
 function DayEditor({ dateKey, year, month, cd, leaveTeams, volTeams, isOwner, onChange, onClear, onClose }) {
   const d = dateKey.split("-")[2];
